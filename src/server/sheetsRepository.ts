@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "crypto";
-import { calculateCompletion, calculateDebt, shouldCreatePenalty } from "../lib/habitLogic";
+import { calculateCompletion, calculateDebt, listDaysToClose, shouldCreatePenalty } from "../lib/habitLogic";
 import { getGoogleSheetsClient } from "../lib/googleSheetsClient";
 import type { DailyEntry, DailySummary, Habit, MoneySummary, Payment, Penalty, Person, PersonSlug } from "../types/domain";
 
@@ -206,30 +206,47 @@ export function createSheetsRepository(): SheetsRepository {
       const activeHabitIds = new Set(habitRows.map(mapHabit).filter((habit) => habit.isActive).map((habit) => habit.id));
       const closedKeys = new Set(closures.map((row) => `${row[1]}:${row[2]}`));
       const penaltyKeys = new Set(penalties.map((row) => `${row[1]}:${row[2]}`));
-      const groups = new Map<string, DailyEntry[]>();
+      const entriesByKey = new Map<string, DailyEntry[]>();
+      let firstDate = today;
 
       for (const row of rows) {
         const entry = mapEntry(row);
+        if (entry.date < firstDate) firstDate = entry.date;
         if (entry.date >= today) continue;
         // Bỏ qua entry mồ côi (habit đã tắt) để không tính/phạt sai.
         if (!activeHabitIds.has(entry.habitId)) continue;
         const key = `${entry.personId}:${entry.date}`;
-        groups.set(key, [...(groups.get(key) ?? []), entry]);
+        entriesByKey.set(key, [...(entriesByKey.get(key) ?? []), entry]);
       }
 
-      for (const [key, entries] of groups.entries()) {
-        if (closedKeys.has(key)) continue;
-        const [personId, date] = key.split(":") as [PersonSlug, string];
-        const isComplete = calculateCompletion(entries).isComplete;
-        await appendRow("daily_closures", [randomUUID(), personId, date, isComplete, nowIso()]);
-        if (shouldCreatePenalty(entries) && !penaltyKeys.has(key)) {
-          await appendRow("penalties", [randomUUID(), personId, date, PENALTY_AMOUNT, "missed_day", nowIso()]);
+      // Duyệt theo lịch: ngày không mở app cũng phải bị chốt & phạt.
+      const hasActiveHabit = new Map(
+        PEOPLE.map((personId) => [
+          personId,
+          habitRows.map(mapHabit).some((habit) => habit.isActive && habit.personId === personId)
+        ])
+      );
+
+      for (const date of listDaysToClose(firstDate, today)) {
+        for (const personId of PEOPLE) {
+          const key = `${personId}:${date}`;
+          if (closedKeys.has(key)) continue;
+          const entries = entriesByKey.get(key) ?? [];
+          // Không có entry nhưng người đó có habit active => coi như miss cả ngày.
+          const isMissedDay = entries.length === 0 ? hasActiveHabit.get(personId) === true : shouldCreatePenalty(entries);
+          const isComplete = entries.length > 0 && calculateCompletion(entries).isComplete;
+          await appendRow("daily_closures", [randomUUID(), personId, date, isComplete, nowIso()]);
+          if (isMissedDay && !penaltyKeys.has(key)) {
+            await appendRow("penalties", [randomUUID(), personId, date, PENALTY_AMOUNT, "missed_day", nowIso()]);
+            penaltyKeys.add(key);
+          }
         }
       }
     },
     async listSevenDayHistory(today) {
       const rows = await getRows("daily_entries");
       const penalties = new Set((await getRows("penalties")).map((row) => `${row[1]}:${row[2]}`));
+      const activeHabits = (await getRows("habits")).map(mapHabit).filter((habit) => habit.isActive);
       const dates = Array.from({ length: 7 }, (_, index) => {
         const date = new Date(`${today}T00:00:00+07:00`);
         date.setDate(date.getDate() - index);
@@ -239,10 +256,16 @@ export function createSheetsRepository(): SheetsRepository {
       return dates.flatMap((date) =>
         PEOPLE.map((personId): DailySummary => {
           const entries = rows.filter((row) => row[1] === personId && row[3] === date).map((row) => mapEntry(row));
+          // Ngày không mở app: không có entry nhưng vẫn phải hiện 0/n, không phải 100%.
+          const habitCount = activeHabits.filter((habit) => habit.personId === personId).length;
+          const completion =
+            entries.length === 0 && habitCount > 0
+              ? { total: habitCount, done: 0, percent: 0, isComplete: false }
+              : calculateCompletion(entries);
           return {
             date,
             personId,
-            completion: calculateCompletion(entries),
+            completion,
             hasPenalty: penalties.has(`${personId}:${date}`)
           };
         })

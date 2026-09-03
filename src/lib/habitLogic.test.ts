@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateCompletion,
   calculateDebt,
+  listDaysToClose,
   shouldCreatePenalty
 } from "./habitLogic";
 import type { DailyEntry, Payment, Penalty } from "../types/domain";
@@ -53,5 +54,15 @@ describe("habitLogic", () => {
 
     expect(calculateDebt(penalties, payments)).toBe(25000);
     expect(calculateDebt(penalties, [{ ...payments[0], amount: 80000 }])).toBe(0);
+  });
+
+  it("lists every calendar day before today, including days the app was never opened", () => {
+    expect(listDaysToClose("2026-08-30", "2026-09-03")).toEqual([
+      "2026-08-30",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02"
+    ]);
+    expect(listDaysToClose("2026-09-03", "2026-09-03")).toEqual([]);
   });
 });

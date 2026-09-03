@@ -26,3 +26,17 @@ export function calculateDebt(penalties: Penalty[], payments: Payment[]): number
 
   return Math.max(0, penaltyTotal - paymentTotal);
 }
+
+// Ngày chưa mở app thì không có dòng nào trong daily_entries -> trước đây bị bỏ qua,
+// nên nghỉ 2 tuần vẫn chỉ bị phạt 1-2 ngày. Liệt kê theo lịch thay vì theo entry đã có.
+export function listDaysToClose(firstDate: string, today: string): string[] {
+  const days: string[] = [];
+  const cursor = new Date(`${firstDate}T00:00:00Z`);
+  const end = new Date(`${today}T00:00:00Z`);
+  // ponytail: chặn 366 ngày cho mỗi lần chạy, đủ dùng; bỏ nếu cần lịch sử dài hơn.
+  for (let i = 0; cursor < end && i < 366; i += 1) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return days;
+}
